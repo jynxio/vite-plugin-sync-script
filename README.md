@@ -1,30 +1,46 @@
 ## Description
 
-Collect the content of all blocking `<script>` tags in `index.html`, then perform bundling according to the Vite configuration file, and finally fill the bundling results back into `index.html`.
+During the build phase, use Vite's existing configuration to process all synchronous JavaScript code in `index.html`, for example:
 
-It's particularly useful if you need to insert blocking scripts into `index.html` and want these scripts to benefit from Vite's bundling process.
+```html
+<!-- 🥩 Before -->
+<head>
+    <script src="./sync-script-1.js"></script>
+    <script>/* sync-script-2 */</script>
+</head>
+<body>
+    <script>/* sync-script-3 */</script>
+</body>
 
-> ⚠️ Work in progress...
+<!-- 🍖 After -->
+<head>
+    <script>
+        // sync-script-1, sync-script-2, sync-script-3... After compression, transpilation, etc.
+    </script>
+</head>
+```
+
+> Only JavaScript syntax is supported.
 
 ## Implementation
+
 ```ts
-import type { Plugin } from "vite";
 import path from "node:path";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { JSDOM } from "jsdom";
 
-export default function extraEntryPlugin(): Plugin {
+export default function extraEntryPlugin() {
+    let allScriptElemCode = "";
+
     const allScriptElemContent: string[] = [];
     const virtualFileId = `virtual:${crypto.randomUUID()}`;
     const resolvedVirtualFileId = `\0${virtualFileId}`;
     const { promise, resolve } = Promise.withResolvers();
 
-    let allScriptElemCode = "";
-
     return [
         {
-            name: "vite-plugin-inject-sync-script-pre",
+            name: "vite-plugin-sync-script-pre",
             apply: "build",
             resolveId(id) {
                 if (id === virtualFileId) return resolvedVirtualFileId;
@@ -38,9 +54,9 @@ export default function extraEntryPlugin(): Plugin {
                     rollupOptions: {
                         ...config.build?.rollupOptions,
                         input: {
-                            // 处理没有配置 rollupOptions 的情况
-                            ...(!config.build?.rollupOptions?.input ? { index: "index.html" } : {}),
-                            ...config.build?.rollupOptions?.input,
+                            ...(config.build?.rollupOptions?.input || {
+                                index: path.resolve(__dirname, "index.html"),
+                            }),
                             [virtualFileId]: virtualFileId,
                         },
                     },
@@ -53,24 +69,12 @@ export default function extraEntryPlugin(): Plugin {
                     const document = dom.window.document;
                     const scriptElems = document.getElementsByTagName("script");
 
-                    const filteredScriptElems = Array.from(scriptElems).filter((item) => {
-                        if (item.type === "module") return false;
-                        if (item.hasAttribute("async")) return false;
-                        if (item.hasAttribute("defer")) return false;
-
-                        return true;
-                    });
-
-                    let count = 0;
-
                     for (const item of Array.from(scriptElems)) {
                         if (item.type === "module") continue;
                         if (item.hasAttribute("async")) continue;
                         if (item.hasAttribute("defer")) continue;
 
                         const src = item.getAttribute("src");
-
-                        count++;
 
                         if (src) {
                             const absolutePath = path.join(__dirname, path.dirname(htmlPath), src);
@@ -85,12 +89,10 @@ export default function extraEntryPlugin(): Plugin {
                     }
 
                     resolve(allScriptElemContent.join("\n"));
-
                     return dom.serialize();
                 },
             },
             generateBundle(_, bundle) {
-                // 找到虚拟文件的打包结果
                 const chunk = Object.values(bundle).find(
                     (chunk) =>
                         chunk.type === "chunk" && chunk.facadeModuleId === resolvedVirtualFileId,
@@ -103,7 +105,7 @@ export default function extraEntryPlugin(): Plugin {
             },
         },
         {
-            name: "vite-plugin-inject-sync-script-post",
+            name: "vite-plugin-sync-script-post",
             apply: "build",
             transformIndexHtml: {
                 order: "post",
